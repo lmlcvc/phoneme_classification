@@ -2,8 +2,12 @@ import os
 import numpy as np
 import librosa
 
-from sklearn.preprocessing import LabelEncoder
+# import torch
+# from torch.utils.data import DataLoader
+
+from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.model_selection import train_test_split
+from sklearn.decomposition import PCA
 
 from scipy.spatial.distance import mahalanobis
 
@@ -11,35 +15,65 @@ from joblib import Parallel, delayed
 from tqdm import tqdm
 import configparser
 
+# from dataset import VEPRADDataset
+
 config = configparser.ConfigParser()
 config.read('config.ini')
+config = config['default']
+
+# TODO specify cpu or gpu
 
 # Directories
-male_audios_dir = config['default']['male_audios_dir']
-female_audios_dir = config['default']['female_audios_dir']
-male_transcripts_dir = config['default']['male_transcripts_dir']
-female_transcripts_dir = config['default']['female_transcripts_dir']
+male_audios_dir = config['male_audios_dir']
+female_audios_dir = config['female_audios_dir']
+male_transcripts_dir = config['male_transcripts_dir']
+female_transcripts_dir = config['female_transcripts_dir']
 
+# TODO move all to config.ini
 FRAME_LENGTH = 0.03
 FRAME_OVERLAP = 0.5
+
 LPC_ORDER = 12
+# TODO simple upgrade idea: LPC + MFCC = about 50 features, and works very well for phonemes
+
 N_JOBS = -1
 
-# TODO dž, đ??
+VAL_RATIO = 0.2
+BATCH_SIZE = 64
+
+
+# TODO đ??
 alphabet_tokens = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 
                    'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 
                    's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
                    'L', 'N'                                  # lj, nj
-                   '~', '^', '{', '`',                       # č, ć, đ, dž, š, ž  
+                   '~', '^', '}', '{', '`',                       # č, ć, dž, š, ž  
                    '<sil>', '<uzdah>',                       # silence, uzdah
-                   'papir'
+                   '<papir>'
                    ]       
 
 def tokenize_transcript(transcript: str) -> list:
+    """
+    Tokenise the transcript into valid tokens from the alphabet_tokens list.
+    Handles multi-character tokens (<sil>, <uzdah>, <papir>).
+    """
     tokens = []
-    for char in transcript:
-        if char in alphabet_tokens:
-            tokens.append(char)
+    i = 0
+    while i < len(transcript):
+        # Check for multi-character tokens
+        if transcript[i] == '<':
+            end_idx = transcript.find('>', i)
+            if end_idx != -1:
+                token = transcript[i:end_idx + 1]
+                if token in alphabet_tokens:
+                    tokens.append(token)
+                i = end_idx + 1
+                continue
+        
+        # Handle single-character tokens
+        if transcript[i] in alphabet_tokens:
+            tokens.append(transcript[i])
+        i += 1
     return tokens
 
 def load_audio_and_transcripts(audio_dir, transcript_dir):
@@ -68,42 +102,101 @@ def frame_signal(y, sr):
 def extract_lpc_features(frames):
     return np.array([librosa.lpc(frame, order=LPC_ORDER) for frame in frames])
 
+def same_seeds(seed):
+    """
+    Set the random seed for reproducibility.
+    """
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)  
+    np.random.seed(seed)  
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
+
 if __name__ == "__main__":
+    # device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    # print(f"cuda available: {torch.cuda.is_available()}")
+    # print(f"Using device: {device}")
+    # print(f"Num GPUs: {torch.cuda.device_count()}")
+
+    # Load audio files and transcripts
+    print("\nLoading audio files and transcripts...")
     audio_data_m = load_audio_and_transcripts(male_audios_dir, male_transcripts_dir)
     audio_data_f = load_audio_and_transcripts(female_audios_dir, female_transcripts_dir)
     audio_data_all = audio_data_m + audio_data_f
     print(f"Loaded {len(audio_data_all)} audio files with transcripts.")
 
-    print(audio_data_all[0][2])
-    print(tokenize_transcript(audio_data_all[0][2]))
-
-    import sys
-    sys.exit
-
-    ###
-
+    # Preprocess audio data
+    print("\nPreprocessing audio data...")
     frame_data = []
     frame_labels = []
 
-    for y, sr, phonemes in tqdm(audio_data_all, desc="Framing and labeling"):
+    for y, sr, transcript in tqdm(audio_data_all, desc="Framing and labeling"):
+        # Tokenize the transcript
+        phonemes = tokenize_transcript(transcript)
+        
+        # Segment the audio signal into frames
         frames = frame_signal(y, sr)
         frame_data.append(frames)
+        
+        # Assign labels to frames
         total_frames = frames.shape[0]
         phoneme_count = len(phonemes)
         for i in range(total_frames):
             phoneme_idx = min(int(i * phoneme_count / total_frames), phoneme_count - 1)
             frame_labels.append(phonemes[phoneme_idx])
+    # TODO save tokenized transcript
 
+    # Extract LPC features
     lpc_features = Parallel(n_jobs=N_JOBS)(
         delayed(extract_lpc_features)(frames) for frames in tqdm(frame_data, desc="Extracting LPC")
     )
 
     X = np.vstack(lpc_features)
     y = np.array(frame_labels)
+    print(f"Extracted {X.shape[0]} frames with {X.shape[1]} features each.")
 
     label_encoder = LabelEncoder()
     y_encoded = label_encoder.fit_transform(y)
     print(label_encoder.classes_)
+    print(f"Labels: {len(np.unique(y))} unique phonemes")
+
+    # Split the data into training, validation and test sets
+    X, X_test, y, y_test = train_test_split(X, y_encoded, test_size=0.2, random_state=42)
+    percent = int(X.shape[0] * (1 - VAL_RATIO))
+    X_train, X_val = X[:percent], X[percent:]
+    y_train, y_val = y[:percent], y[percent:]
+    
+    print(f"\nTraining set size: {X_train.shape[0]}")
+    print(f"Validation set size: {X_val.shape[0]}")
+    print(f"Test set size: {X_test.shape[0]}")
+
+    # Scale the features
+    scaler = StandardScaler()
+    X_train = scaler.fit_transform(X_train)
+    X_val = scaler.transform(X_val)
+    X_test = scaler.transform(X_test)
+
+    # Apply PCA
+    # pca = PCA(n_components=20)  # Retain 20 principal components
+    # X_train = pca.fit_transform(X_train)
+    # X_test = pca.transform(X_test)
+
+    # TODO use class priors
+
+    import sys
+    sys.exit(0)
+
+    ###
+
+    # Create a dataloader
+    train_set = VEPRADDataset(X_train, y_train)
+    val_set = VEPRADDataset(X_val, y_val)
+    train_loader = DataLoader(train_set, batch_size=BATCH_SIZE, shuffle=True) #only shuffle the training data
+    val_loader = DataLoader(val_set, batch_size=BATCH_SIZE, shuffle=False)
+
+    
 
     # TODO Create a vocabulary
     tokenized_transcript = []
@@ -119,9 +212,11 @@ if __name__ == "__main__":
     covs_inv = {}
 
     # FIXME this trains only 30 intances because y_train is now phonemes
+    # TODO what the fuck is this
     for label in tqdm(np.unique(y_train), desc="Training Mahalanobis"):
         X_label = X_train[y_train == label]
         means[label] = np.mean(X_label, axis=0)
+        # TODO You can tune that small regularizer (e.g., 1e-3, 1e-5) to find the sweet spot.
         cov = np.cov(X_label, rowvar=False) + 1e-6 * np.eye(X_label.shape[1])
         covs_inv[label] = np.linalg.inv(cov)
 
@@ -140,3 +235,8 @@ if __name__ == "__main__":
     y_pred = np.array(y_pred)
     accuracy = np.mean(y_pred == y_test)
     print(f"Accuracy: {accuracy:.4f}")
+
+    # Diagnose confusion
+    # cm = confusion_matrix(y_test, y_pred)
+    # sns.heatmap(cm, annot=True, fmt='d')
+    # plt.show()
