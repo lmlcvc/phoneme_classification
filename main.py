@@ -1,17 +1,24 @@
 import os
 import numpy as np
 import librosa
+
 from sklearn.preprocessing import LabelEncoder
 from sklearn.model_selection import train_test_split
+
 from scipy.spatial.distance import mahalanobis
+
 from joblib import Parallel, delayed
 from tqdm import tqdm
+import configparser
+
+config = configparser.ConfigParser()
+config.read('config.ini')
 
 # Directories
-male_audios_dir = "/media/lana/ExternalSSD/Faks/Komunikacija covjek stroj/VEPRAD/audio_m"
-female_audios_dir = "/media/lana/ExternalSSD/Faks/Komunikacija covjek stroj/VEPRAD/audio_z"
-male_transcripts_dir = "/media/lana/ExternalSSD/Faks/Komunikacija covjek stroj/VEPRAD/transkripcije_m01-m11"
-female_transcripts_dir = "/media/lana/ExternalSSD/Faks/Komunikacija covjek stroj/VEPRAD/transkripcije_z01-z14"
+male_audios_dir = config['default']['male_audios_dir']
+female_audios_dir = config['default']['female_audios_dir']
+male_transcripts_dir = config['default']['male_transcripts_dir']
+female_transcripts_dir = config['default']['female_transcripts_dir']
 
 FRAME_LENGTH = 0.03
 FRAME_OVERLAP = 0.5
