@@ -2,7 +2,7 @@ import os
 import numpy as np
 import librosa
 
-# import torch
+import torch
 # from torch.utils.data import DataLoader
 
 from sklearn.preprocessing import LabelEncoder, StandardScaler
@@ -20,8 +20,6 @@ import configparser
 config = configparser.ConfigParser()
 config.read('config.ini')
 config = config['default']
-
-# TODO specify cpu or gpu
 
 # Directories
 male_audios_dir = config['male_audios_dir']
@@ -43,36 +41,42 @@ BATCH_SIZE = 64
 
 
 # TODO đ??
-alphabet_tokens = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 
-                   'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 
-                   's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
-                   'L', 'N'                                  # lj, nj
-                   '~', '^', '}', '{', '`',                       # č, ć, dž, š, ž  
-                   '<sil>', '<uzdah>',                       # silence, uzdah
-                   '<papir>'
-                   ]       
+alphabet_tokens = {
+    'a': 'a', 'b': 'b', 'c': 'c', 'd': 'd', 'e': 'e', 'f': 'f', 'g': 'g', 'h': 'h', 'i': 'i',
+    'j': 'j', 'k': 'k', 'l': 'l', 'm': 'm', 'n': 'n', 'o': 'o', 'p': 'p', 'q': 'q', 'r': 'r',
+    's': 's', 't': 't', 'u': 'u', 'v': 'v', 'w': 'w', 'x': 'x', 'y': 'y', 'z': 'z',
+    'lj': 'L', 'nj': 'N', 'dž': 'D',  # Digraphs
+    '~': '~', '^': '^', '}': '}', '{': '{', '`': '`',  # č, ć, dž, š, ž  
+    '<sil>': '<sil>', '<uzdah>': '<uzdah>', '<papir>': '<papir>'  # Multi-character tokens
+}  
 
 def tokenize_transcript(transcript: str) -> list:
     """
-    Tokenise the transcript into valid tokens from the alphabet_tokens list.
-    Handles multi-character tokens (<sil>, <uzdah>, <papir>).
+    Tokenize the transcript into valid tokens using the alphabet_tokens dictionary.
+    Handles multi-character tokens (<sil>, <uzdah>, <papir>) and digraphs (lj, nj, dž).
     """
     tokens = []
     i = 0
     while i < len(transcript):
-        # Check for multi-character tokens
+        # Handle multi-character tokens
         if transcript[i] == '<':
             end_idx = transcript.find('>', i)
             if end_idx != -1:
                 token = transcript[i:end_idx + 1]
                 if token in alphabet_tokens:
-                    tokens.append(token)
+                    tokens.append(alphabet_tokens[token])
                 i = end_idx + 1
                 continue
         
+        # Handle digraphs (lj, nj, dž)
+        if transcript[i:i+2] in alphabet_tokens:
+            tokens.append(alphabet_tokens[transcript[i:i+2]])
+            i += 2
+            continue
+        
         # Handle single-character tokens
         if transcript[i] in alphabet_tokens:
-            tokens.append(transcript[i])
+            tokens.append(alphabet_tokens[transcript[i]])
         i += 1
     return tokens
 
@@ -115,10 +119,7 @@ def same_seeds(seed):
     torch.backends.cudnn.deterministic = True
 
 if __name__ == "__main__":
-    # device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    # print(f"cuda available: {torch.cuda.is_available()}")
-    # print(f"Using device: {device}")
-    # print(f"Num GPUs: {torch.cuda.device_count()}")
+    print(f"\nUsing device: {'cuda' if torch.cuda.is_available() else 'cpu'}")
 
     # Load audio files and transcripts
     print("\nLoading audio files and transcripts...")
