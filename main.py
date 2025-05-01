@@ -118,6 +118,16 @@ def same_seeds(seed):
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
 
+def mahalanobis_classification(X, means, covs):
+    preds = []
+    for x in X:
+        dists = [
+            mahalanobis(x, means[label], np.linalg.inv(covs[label]))
+            for label in means
+        ]
+        preds.append(np.argmin(dists))
+    return np.array(preds)
+
 if __name__ == "__main__":
     print(f"\nUsing device: {'cuda' if torch.cuda.is_available() else 'cpu'}")
 
@@ -128,7 +138,7 @@ if __name__ == "__main__":
     audio_data_all = audio_data_m + audio_data_f
     print(f"Loaded {len(audio_data_all)} audio files with transcripts.")
 
-    # Preprocess audio data
+    ## Preprocess audio data
     print("\nPreprocessing audio data...")
     frame_data = []
     frame_labels = []
@@ -141,12 +151,41 @@ if __name__ == "__main__":
         frames = frame_signal(y, sr)
         frame_data.append(frames)
         
-        # Assign labels to frames
+        # Assign labels to frames (improved alignment using energy)
         total_frames = frames.shape[0]
         phoneme_count = len(phonemes)
+        
+        # Estimate energy for each frame
+        energies = np.sum(frames**2, axis=1)
+
+        # Define an energy threshold (25th percentile)
+        threshold = np.percentile(energies, 25)
+
+        # Identify active (voiced) frames
+        active_frames = [i for i, e in enumerate(energies) if e > threshold]
+
+        if phoneme_count == 0:
+            print("Warning: empty transcript")
+            frame_labels.extend(['<sil>'] * total_frames)
+            continue
+
+        # Split active frames into chunks corresponding to phonemes
+        if len(active_frames) >= phoneme_count:
+            chunks = np.array_split(active_frames, phoneme_count)
+        else:
+            chunks = [active_frames]  # fallback: treat all active frames as one phoneme
+
+        assigned = set()
+        for phoneme, chunk in zip(phonemes, chunks):
+            for i in chunk:
+                frame_labels.append(phoneme)
+                assigned.add(i)
+
+        # Assign <sil> to unvoiced/silence frames
         for i in range(total_frames):
-            phoneme_idx = min(int(i * phoneme_count / total_frames), phoneme_count - 1)
-            frame_labels.append(phonemes[phoneme_idx])
+            if i not in assigned:
+                frame_labels.append('<sil>')
+
     # TODO save tokenized transcript
 
     # Extract LPC features
@@ -186,58 +225,22 @@ if __name__ == "__main__":
 
     # TODO use class priors
 
-    import sys
-    sys.exit(0)
-
-    ###
-
-    # Create a dataloader
-    train_set = VEPRADDataset(X_train, y_train)
-    val_set = VEPRADDataset(X_val, y_val)
-    train_loader = DataLoader(train_set, batch_size=BATCH_SIZE, shuffle=True) #only shuffle the training data
-    val_loader = DataLoader(val_set, batch_size=BATCH_SIZE, shuffle=False)
-
-    
-
-    # TODO Create a vocabulary
-    tokenized_transcript = []
-    vocab = {token: idx for idx, token in enumerate(set(tokenized_transcript))}
-    vocab_size = len(vocab)
-
-    token_indices = [vocab[token] for token in tokenized_transcript]
-    print(token_indices[:10])
-
-    X_train, X_test, y_train, y_test = train_test_split(X, y_encoded, test_size=0.2, random_state=42)
-
+    # Compute means and covariances
     means = {}
-    covs_inv = {}
+    covs = {}
 
-    # FIXME this trains only 30 intances because y_train is now phonemes
-    # TODO what the fuck is this
-    for label in tqdm(np.unique(y_train), desc="Training Mahalanobis"):
-        X_label = X_train[y_train == label]
-        means[label] = np.mean(X_label, axis=0)
-        # TODO You can tune that small regularizer (e.g., 1e-3, 1e-5) to find the sweet spot.
-        cov = np.cov(X_label, rowvar=False) + 1e-6 * np.eye(X_label.shape[1])
-        covs_inv[label] = np.linalg.inv(cov)
+    for label in np.unique(y_train):
+        class_data = X_train[y_train == label]
+        means[label] = np.mean(class_data, axis=0)
+        cov = np.cov(class_data, rowvar=False)
+        cov += 1e-5 * np.eye(cov.shape[0])  # Regularization
+        covs[label] = cov
 
-    all_means = np.stack([means[label] for label in sorted(means.keys())])
-    all_inv_covs = np.stack([covs_inv[label] for label in sorted(covs_inv.keys())])
+    # Predict and evaluate
+    y_pred = mahalanobis_classification(X_val, means, covs)
+    val_acc = np.mean(y_pred == y_val)
+    print(f"\nValidation accuracy: {val_acc:.4f}")
 
-    y_pred = []
-
-    for x in tqdm(X_test, desc="Predicting"):
-        distances = [
-            mahalanobis(x, all_means[i], all_inv_covs[i])
-            for i in range(len(all_means))
-        ]
-        y_pred.append(np.argmin(distances))
-
-    y_pred = np.array(y_pred)
-    accuracy = np.mean(y_pred == y_test)
-    print(f"Accuracy: {accuracy:.4f}")
-
-    # Diagnose confusion
-    # cm = confusion_matrix(y_test, y_pred)
-    # sns.heatmap(cm, annot=True, fmt='d')
-    # plt.show()
+    y_pred_test = mahalanobis_classification(X_test, means, covs)
+    test_acc = np.mean(y_pred_test == y_test)
+    print(f"Test accuracy: {test_acc:.4f}")
