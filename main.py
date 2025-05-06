@@ -4,11 +4,20 @@ import numpy as np
 import librosa
 from textgrid import TextGrid
 import torch
+import logging
 
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, classification_report
 from sklearn.decomposition import PCA
+
+from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+from sklearn.svm import SVC
+from sklearn.neural_network import MLPClassifier
+
 from scipy.spatial.distance import mahalanobis
 from joblib import Parallel, delayed
 from tqdm import tqdm
@@ -33,6 +42,12 @@ FRAME_LENGTH = 0.025
 FRAME_STEP = 0.010
 REGULARIZATION = 1e-6
 DROP_LABELS = {'[]', 'greska'}
+
+# --------------------------- LOGGING ----------------------------- #
+logging.basicConfig(filename='execution_log.txt', level=logging.INFO, 
+                    format='%(asctime)s - %(message)s')
+logging.info("Starting execution...")
+
 
 # ------------------------ PHONEME ALIGNMENT ------------------------ #
 def align_phonemes_to_frames(wav_path, grid_path, silence_threshold=0.3, keep_unknown=False):
@@ -93,18 +108,19 @@ def load_aligned_data(audio_dir, textgrid_dir):
             speaker_id = os.path.basename(root)
             textgrid_path = os.path.join(textgrid_dir, speaker_id, file.replace('.wav', '.TextGrid'))
             if not os.path.exists(textgrid_path):
-                print(f"Missing TextGrid for {audio_path}")
+                logging.warning(f"Missing TextGrid for {audio_path}")
                 continue
 
             try:
                 frames, labels = align_phonemes_to_frames(audio_path, textgrid_path)
                 if frames.shape[0] != len(labels):
-                    print(f"Frame-label mismatch: {file}")
+                    logging.warning(f"Frame-label mismatch: {file}")
                     continue
                 data.append((frames, labels))
             except Exception as e:
-                print(f"Error loading {file}: {e}")
+                logging.error(f"Error loading {file}: {e}")
     return data
+
 
 # --------------------------- LPC FEATURES --------------------------- #
 def extract_lpc_features(frames):
@@ -119,6 +135,7 @@ def extract_lpc_features(frames):
             continue
     return np.array(lpc_list)
 
+
 # ------------------------- MAHALANOBIS CLF -------------------------- #
 def mahalanobis_classification(X, means, inv_covs):
     preds = []
@@ -127,21 +144,45 @@ def mahalanobis_classification(X, means, inv_covs):
         preds.append(np.argmin(dists))
     return np.array(preds)
 
+
+# ----------------------- CLASSIFIER COMPARISON ----------------------- #
+def try_classifiers(X_train, y_train, X_test, y_test, label_encoder):
+    logging.info("\n\nComparing classifiers on LPC features...\n")
+    classifiers = {
+        "Random Forest": RandomForestClassifier(n_estimators=100),
+        "k-NN (k=5)": KNeighborsClassifier(n_neighbors=5),
+        "Logistic Regression": LogisticRegression(max_iter=1000),
+        "LDA": LinearDiscriminantAnalysis(),
+        "SVM (RBF)": SVC(kernel="rbf"),
+        "MLP": MLPClassifier(hidden_layer_sizes=(100,), max_iter=300)
+    }
+
+    for name, clf in classifiers.items():
+        try:
+            clf.fit(X_train, y_train)
+            y_pred = clf.predict(X_test)
+            acc = accuracy_score(y_test, y_pred)
+            logging.info(f"{name:<20} Accuracy: {acc * 100:.2f}%")
+        except Exception as e:
+            logging.error(f"{name:<20} Failed: {e}")
+
+
 # ------------------------------ MAIN ------------------------------- #
 if __name__ == "__main__":
-    print(f"\nUsing device: {'cuda' if torch.cuda.is_available() else 'cpu'}")
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    logging.info(f"Using device: {device}")
 
-    print("\nLoading aligned audio + phoneme labels...")
+    logging.info("\nLoading aligned audio + phoneme labels...")
     data_m = load_aligned_data(male_audios_dir, textgrids_dir)
     data_f = load_aligned_data(female_audios_dir, textgrids_dir)
     all_data = data_m + data_f
-    print(f"Loaded {len(all_data)} aligned utterances.")
+    logging.info(f"Loaded {len(all_data)} aligned utterances.")
 
-    print("\nExtracting LPC features...")
+    logging.info("\nExtracting LPC features...")
     frame_data = [frames for frames, _ in all_data]
     frame_labels = [labels for _, labels in all_data]
 
-    print(f"Labels: {set(label for labels in frame_labels for label in labels)}")
+    logging.info(f"Labels: {set(label for labels in frame_labels for label in labels)}")
 
     lpc_features = Parallel(n_jobs=N_JOBS)(
         delayed(extract_lpc_features)(frames) for frames in tqdm(frame_data, desc="LPC Extraction")
@@ -165,8 +206,8 @@ if __name__ == "__main__":
     # Encode labels
     label_encoder = LabelEncoder()
     y_encoded = label_encoder.fit_transform(all_labels)
-    print(f"Classes: {label_encoder.classes_}")
-    print(f"{len(label_encoder.classes_)} unique phonemes")
+    logging.info(f"Classes: {label_encoder.classes_}")
+    logging.info(f"{len(label_encoder.classes_)} unique phonemes")
 
     # Train-test split
     X_train, X_test, y_train, y_test = train_test_split(
@@ -179,7 +220,7 @@ if __name__ == "__main__":
     X_val, y_val = X_train[-val_size:], y_train[-val_size:]
     X_train, y_train = X_train[:-val_size], y_train[:-val_size]
 
-    print(f"\nTrain: {X_train.shape}, Val: {X_val.shape}, Test: {X_test.shape}")
+    logging.info(f"Train: {X_train.shape}, Val: {X_val.shape}, Test: {X_test.shape}")
 
     # Standardize
     scaler = StandardScaler()
@@ -188,10 +229,10 @@ if __name__ == "__main__":
     X_test = scaler.transform(X_test)
 
     # Optional: apply PCA (improves Mahalanobis stability)
-    pca = PCA(n_components=0.95)
-    X_train = pca.fit_transform(X_train)
-    X_val = pca.transform(X_val)
-    X_test = pca.transform(X_test)
+    # pca = PCA(n_components=0.95)
+    # X_train = pca.fit_transform(X_train)
+    # X_val = pca.transform(X_val)
+    # X_test = pca.transform(X_test)
 
     # Compute means and covariances
     means = {}
@@ -206,11 +247,12 @@ if __name__ == "__main__":
         covs[label] = cov
         inv_covs[label] = np.linalg.inv(cov)
 
-    # Classify test data
-    print("\nClassifying test data using Mahalanobis distance...")
+    logging.info("\nClassifying test data using Mahalanobis distance...")
     y_pred = mahalanobis_classification(X_test, means, inv_covs)
 
     accuracy = accuracy_score(y_test, y_pred)
-    print(f"\nAccuracy: {accuracy * 100:.2f}%")
-    print("\nClassification Report:")
-    print(classification_report(y_test, y_pred, target_names=label_encoder.classes_))
+    logging.info(f"\nAccuracy: {accuracy * 100:.2f}%")
+    logging.info("\nClassification Report:")
+    logging.info(classification_report(y_test, y_pred, target_names=label_encoder.classes_))
+
+    try_classifiers(X_train, y_train, X_test, y_test, label_encoder)
