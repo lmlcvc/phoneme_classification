@@ -188,10 +188,10 @@ if __name__ == "__main__":
     X_test = scaler.transform(X_test)
 
     # Optional: apply PCA (improves Mahalanobis stability)
-    # pca = PCA(n_components=8)
-    # X_train = pca.fit_transform(X_train)
-    # X_val = pca.transform(X_val)
-    # X_test = pca.transform(X_test)
+    pca = PCA(n_components=0.95)
+    X_train = pca.fit_transform(X_train)
+    X_val = pca.transform(X_val)
+    X_test = pca.transform(X_test)
 
     # Compute means and covariances
     means = {}
