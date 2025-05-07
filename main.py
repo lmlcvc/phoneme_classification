@@ -23,6 +23,8 @@ from joblib import Parallel, delayed
 from tqdm import tqdm
 import configparser
 
+# TODO separate classes/files?
+
 
 # ----------------------------- CONFIG ----------------------------- #
 config = configparser.ConfigParser()
@@ -146,25 +148,63 @@ def mahalanobis_classification(X, means, inv_covs):
 
 
 # ----------------------- CLASSIFIER COMPARISON ----------------------- #
-def try_classifiers(X_train, y_train, X_test, y_test, label_encoder):
-    logging.info("\n\nComparing classifiers on LPC features...\n")
-    classifiers = {
-        "Random Forest": RandomForestClassifier(n_estimators=100),
-        "k-NN (k=5)": KNeighborsClassifier(n_neighbors=5),
-        "Logistic Regression": LogisticRegression(max_iter=1000),
-        "LDA": LinearDiscriminantAnalysis(),
-        "SVM (RBF)": SVC(kernel="rbf"),
-        "MLP": MLPClassifier(hidden_layer_sizes=(100,), max_iter=300)
-    }
+def compare_mahalanobis_classifiers(X_train, y_train, X_test, y_test, label_encoder):
+    print("\n\nComparing Mahalanobis-based classifiers...\n")
 
-    for name, clf in classifiers.items():
-        try:
-            clf.fit(X_train, y_train)
-            y_pred = clf.predict(X_test)
-            acc = accuracy_score(y_test, y_pred)
-            logging.info(f"{name:<20} Accuracy: {acc * 100:.2f}%")
-        except Exception as e:
-            logging.error(f"{name:<20} Failed: {e}")
+    # --- Precompute per-class stats ---
+    classes = np.unique(y_train)
+    means = {}
+    inv_cov = None
+
+    # Shared covariance matrix for Mahalanobis k-NN and LDA
+    cov = np.cov(X_train.T)
+    cov += REGULARIZATION * np.eye(cov.shape[0])
+    inv_cov = np.linalg.inv(cov)
+
+    for label in classes:
+        means[label] = np.mean(X_train[y_train == label], axis=0)
+
+    # --- Classifier 1: Mahalanobis Centroid ---
+    def centroid_predict(X):
+        preds = []
+        for x in X:
+            dists = [mahalanobis(x, means[c], inv_cov) for c in classes]
+            preds.append(classes[np.argmin(dists)])
+        return np.array(preds)
+
+    y_pred_centroid = centroid_predict(X_test)
+    acc = accuracy_score(y_test, y_pred_centroid)
+    print(f"Centroid Mahalanobis Accuracy: {acc * 100:.2f}%")
+    print(classification_report(y_test, y_pred_centroid, target_names=label_encoder.classes_))
+
+    # --- Classifier 2: Mahalanobis k-NN ---
+    def mahalanobis_knn_predict(X_test, k=5):
+        predictions = []
+        for x in X_test:
+            dists = [mahalanobis(x, x_train, inv_cov) for x_train in X_train]
+            knn_indices = np.argsort(dists)[:k]
+            knn_labels = y_train[knn_indices]
+            voted = np.bincount(knn_labels).argmax()
+            predictions.append(voted)
+        return np.array(predictions)
+
+    for k in [3, 5, 7]:
+        y_pred_knn = mahalanobis_knn_predict(X_test, k=k)
+        acc = accuracy_score(y_test, y_pred_knn)
+        print(f"Mahalanobis k-NN (k={k}) Accuracy: {acc * 100:.2f}%")
+        print(classification_report(y_test, y_pred_knn, target_names=label_encoder.classes_))
+
+    # --- Classifier 3: LDA (implicitly Mahalanobis-like) ---
+    try:
+        clf_lda = LinearDiscriminantAnalysis()
+        clf_lda.fit(X_train, y_train)
+        y_pred_lda = clf_lda.predict(X_test)
+        acc = accuracy_score(y_test, y_pred_lda)
+        print(f"LDA Accuracy: {acc * 100:.2f}%")
+        print(classification_report(y_test, y_pred_lda, target_names=label_encoder.classes_))
+    except Exception as e:
+        print(f"LDA failed: {e}")
+
 
 
 # ------------------------------ MAIN ------------------------------- #
@@ -255,4 +295,4 @@ if __name__ == "__main__":
     logging.info("\nClassification Report:")
     logging.info(classification_report(y_test, y_pred, target_names=label_encoder.classes_))
 
-    try_classifiers(X_train, y_train, X_test, y_test, label_encoder)
+    compare_mahalanobis_classifiers(X_train, y_train, X_test, y_test, label_encoder)
