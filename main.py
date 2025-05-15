@@ -23,6 +23,11 @@ from joblib import Parallel, delayed
 from tqdm import tqdm
 import configparser
 
+import torch.nn as nn
+from torch.utils.data import TensorDataset, DataLoader
+from mahalanobis_net import MahalanobisNet, compute_class_stats, mahalanobis_predict
+
+
 # TODO separate classes/files?
 
 
@@ -205,6 +210,60 @@ def compare_mahalanobis_classifiers(X_train, y_train, X_test, y_test, label_enco
     except Exception as e:
         print(f"LDA failed: {e}")
 
+    # --- Classifier 4: Mahalanobis Neural Classifier ---
+    print("\nTraining MahalanobisNet (shallow MLP + Mahalanobis distance)...")
+
+    input_dim = X_train.shape[1]
+    n_classes = len(label_encoder.classes_)
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    model = MahalanobisNet(input_dim=input_dim, embedding_dim=32).to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    criterion = nn.CrossEntropyLoss()
+
+    X_train_tensor = torch.tensor(X_train, dtype=torch.float32).to(device)
+    y_train_tensor = torch.tensor(y_train, dtype=torch.long).to(device)
+    X_val_tensor = torch.tensor(X_val, dtype=torch.float32).to(device)
+    y_val_tensor = torch.tensor(y_val, dtype=torch.long).to(device)
+    X_test_tensor = torch.tensor(X_test, dtype=torch.float32).to(device)
+    y_test_tensor = torch.tensor(y_test, dtype=torch.long).to(device)
+
+    train_ds = TensorDataset(X_train_tensor, y_train_tensor)
+    train_loader = DataLoader(train_ds, batch_size=512, shuffle=True)
+
+    for epoch in range(10):  # You can increase this later
+        model.train()
+        for xb, yb in train_loader:
+            embeds = model(xb)
+            means, inv_cov = compute_class_stats(embeds, yb, n_classes)
+            preds = mahalanobis_predict(embeds, means, inv_cov)
+            loss = criterion(preds, yb)
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+        # Validation
+        model.eval()
+        with torch.no_grad():
+            val_embeds = model(X_val_tensor)
+            train_embeds = model(X_train_tensor)
+            means, inv_cov = compute_class_stats(train_embeds, y_train_tensor, n_classes)
+            val_preds = mahalanobis_predict(val_embeds, means, inv_cov)
+            val_acc = (val_preds == y_val_tensor).float().mean().item()
+            print(f"Epoch {epoch+1}: Val Accuracy = {val_acc * 100:.2f}%")
+
+    # Final test evaluation
+    with torch.no_grad():
+        test_embeds = model(X_test_tensor)
+        test_preds = mahalanobis_predict(test_embeds, means, inv_cov)
+        test_acc = (test_preds == y_test_tensor).float().mean().item()
+        print(f"\n[MahalanobisNet] Test Accuracy: {test_acc * 100:.2f}%")
+        print(classification_report(
+            y_test_tensor.cpu().numpy(),
+            test_preds.cpu().numpy(),
+            target_names=label_encoder.classes_
+        ))
 
 
 # ------------------------------ MAIN ------------------------------- #
