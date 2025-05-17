@@ -283,9 +283,7 @@ if __name__ == "__main__":
 
     logging.info(f"Labels: {set(label for labels in frame_labels for label in labels)}")
 
-    lpc_features = Parallel(n_jobs=N_JOBS)(
-        delayed(extract_lpc_features)(frames) for frames in tqdm(frame_data, desc="LPC Extraction")
-    )
+    lpc_features = [extract_lpc_features(frames) for frames in tqdm(frame_data, desc="LPC Extraction")]
     filtered_features = []
     filtered_labels = []
 
