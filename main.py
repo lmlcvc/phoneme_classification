@@ -141,7 +141,7 @@ def compare_mahalanobis_classifiers(X_train, y_train, X_val, y_val, X_test, y_te
 
     y_pred = centroid_predict(X_test)
     print("Centroid Mahalanobis Accuracy:", accuracy_score(y_test, y_pred) * 100)
-    print(classification_report(y_test, y_pred, target_names=label_encoder.classes_))
+    print(classification_report(y_test, y_pred, target_names=label_encoder.classes_, zero_division=0))
 
     # --- LDA ---
     try:
