@@ -35,7 +35,7 @@ def mahalanobis_predict(embeddings, class_means, inv_cov):
     dists = []
     for mean in class_means:
         diff = embeddings - mean.unsqueeze(0)
-        d = torch.einsum('bi,ij,bj->b', diff, inv_cov, diff)
+        d = torch.einsum('bi,ij,bj->b', diff, inv_cov, diff) # computes the Mahalanobis distance for all samples in the batch to a given class mean
         dists.append(d)
     dists = torch.stack(dists, dim=1)
-    return torch.argmin(dists, dim=1)
+    return -dists # Negative because we want to minimize the distance

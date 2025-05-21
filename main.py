@@ -185,17 +185,19 @@ def compare_mahalanobis_classifiers(X_train, y_train, X_val, y_val, X_test, y_te
             train_embeds = model(X_train_tensor)
             means, inv_cov = compute_class_stats(train_embeds, y_train_tensor, len(label_encoder.classes_))
             val_preds = mahalanobis_predict(val_embeds, means, inv_cov)
-            val_acc = (val_preds == y_val_tensor).float().mean().item()
+            val_pred_labels = val_preds.argmax(dim=1)
+            val_acc = (val_pred_labels == y_val_tensor).float().mean().item()
             print(f"Epoch {epoch+1}: Val Accuracy = {val_acc * 100:.2f}%")
 
     with torch.no_grad():
         test_embeds = model(X_test_tensor)
         test_preds = mahalanobis_predict(test_embeds, means, inv_cov)
-        test_acc = (test_preds == y_test_tensor).float().mean().item()
+        test_pred_labels = test_preds.argmax(dim=1)
+        test_acc = (test_pred_labels == y_test_tensor).float().mean().item()
         print(f"\n[MahalanobisNet] Test Accuracy: {test_acc * 100:.2f}%")
         print(classification_report(
             y_test_tensor.cpu().numpy(),
-            test_preds.cpu().numpy(),
+            test_pred_labels.cpu().numpy(),
             target_names=label_encoder.classes_
         ))
 
@@ -204,7 +206,7 @@ def compare_mahalanobis_classifiers(X_train, y_train, X_val, y_val, X_test, y_te
 if __name__ == "__main__":
     data_m = load_aligned_data(male_audios_dir, textgrids_dir)
     data_f = load_aligned_data(female_audios_dir, textgrids_dir)
-    all_data = data_m + data_f
+    all_data = data_m + data_f 
 
     frame_data = [frames for frames, _ in all_data]
     frame_labels = [labels for _, labels in all_data]
