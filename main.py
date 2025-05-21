@@ -6,6 +6,7 @@ from textgrid import TextGrid
 import torch
 import logging
 import argparse
+import datetime
 
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.model_selection import train_test_split
@@ -216,6 +217,9 @@ def compare_mahalanobis_classifiers(X_train, y_train, X_val, y_val, X_test, y_te
 
 # ------------------------------ MAIN ------------------------------- #
 if __name__ == "__main__":
+    start_time = datetime.now().timestamp()
+    print("Execution started...")
+
     parser = argparse.ArgumentParser(description="Compare Mahalanobis-based classifiers.")
     parser.add_argument(
         "--classifiers",
@@ -270,3 +274,5 @@ if __name__ == "__main__":
 
     compare_mahalanobis_classifiers(X_train, y_train, X_val, y_val, X_test, y_test, label_encoder, args.classifiers)
 
+    end_time = datetime.now().timestamp()
+    print(f"Elapsed time: {datetime.fromtimestamp(end_time - start_time).strftime('%H:%M:%S')}")
