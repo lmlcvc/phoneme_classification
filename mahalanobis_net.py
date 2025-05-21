@@ -4,16 +4,19 @@ import torch.nn.functional as F
 
 
 class MahalanobisNet(nn.Module):
-    def __init__(self, input_dim, embedding_dim=32):
-        super(MahalanobisNet, self).__init__()
-        self.net = nn.Sequential(
+    def __init__(self, input_dim, embedding_dim=32, n_classes=None):
+        super().__init__()
+        self.encoder = nn.Sequential(
             nn.Linear(input_dim, 64),
             nn.ReLU(),
-            nn.Linear(64, embedding_dim),
+            nn.Linear(64, embedding_dim)
         )
+        self.classifier = nn.Linear(embedding_dim, n_classes)  # used only during training
 
     def forward(self, x):
-        return self.net(x)
+        embed = self.encoder(x)
+        logits = self.classifier(embed)
+        return logits, embed
 
 
 def compute_class_stats(embeddings, labels, n_classes, eps=1e-6):

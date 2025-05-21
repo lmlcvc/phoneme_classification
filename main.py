@@ -161,10 +161,13 @@ def compare_mahalanobis_classifiers(X_train, y_train, X_val, y_val, X_test, y_te
     if "mahalanobisnet" in classifiers_to_run:
         print("\n[Running] MahalanobisNet Classifier...")
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        model = MahalanobisNet(input_dim=X_train.shape[1], embedding_dim=32).to(device)
+        
+        # Initialize model once
+        model = MahalanobisNet(input_dim=X_train.shape[1], embedding_dim=32, n_classes=len(label_encoder.classes_)).to(device)
         optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
         criterion = nn.CrossEntropyLoss()
 
+        # Move data to tensors
         X_train_tensor = torch.tensor(X_train, dtype=torch.float32).to(device)
         y_train_tensor = torch.tensor(y_train, dtype=torch.long).to(device)
         X_val_tensor = torch.tensor(X_val, dtype=torch.float32).to(device)
@@ -172,40 +175,37 @@ def compare_mahalanobis_classifiers(X_train, y_train, X_val, y_val, X_test, y_te
         X_test_tensor = torch.tensor(X_test, dtype=torch.float32).to(device)
         y_test_tensor = torch.tensor(y_test, dtype=torch.long).to(device)
 
+        # Training loop using classification loss
         loader = DataLoader(TensorDataset(X_train_tensor, y_train_tensor), batch_size=512, shuffle=True)
         for epoch in range(10):
             model.train()
             for xb, yb in loader:
-                embeds = model(xb)
-                means, inv_cov = compute_class_stats(embeds, yb, len(label_encoder.classes_))
-                
-                # pass logits to CrossEntropyLoss criterion
-                logits = []
-                for mean in means:
-                    diff = embeds - mean.unsqueeze(0)
-                    d = torch.einsum('bi,ij,bj->b', diff, inv_cov, diff)
-                    logits.append(-d) 
-                logits = torch.stack(logits, dim=1)
+                logits, _ = model(xb)
                 loss = criterion(logits, yb)
-
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
 
+            # Evaluate using Mahalanobis
             model.eval()
             with torch.no_grad():
-                val_embeds = model(X_val_tensor)
-                train_embeds = model(X_train_tensor)
+                _, train_embeds = model(X_train_tensor)
+                _, val_embeds = model(X_val_tensor)
                 means, inv_cov = compute_class_stats(train_embeds, y_train_tensor, len(label_encoder.classes_))
-                val_preds = mahalanobis_scores(val_embeds, means, inv_cov)
-                val_pred_labels = val_preds.argmax(dim=1)
+                val_scores = mahalanobis_scores(val_embeds, means, inv_cov)
+                val_pred_labels = val_scores.argmax(dim=1)
                 val_acc = (val_pred_labels == y_val_tensor).float().mean().item()
-                print(f"Epoch {epoch+1}: Val Accuracy = {val_acc * 100:.2f}%")
+                print(f"Epoch {epoch + 1}: Val Accuracy = {val_acc * 100:.2f}%")
 
+        # Final test evaluation
+        model.eval()
         with torch.no_grad():
-            test_embeds = model(X_test_tensor)
-            test_preds = mahalanobis_scores(test_embeds, means, inv_cov)
-            test_pred_labels = test_preds.argmax(dim=1)
+            _, train_embeds = model(X_train_tensor)
+            _, test_embeds = model(X_test_tensor)
+            means, inv_cov = compute_class_stats(train_embeds, y_train_tensor, len(label_encoder.classes_))
+
+            test_scores = mahalanobis_scores(test_embeds, means, inv_cov)
+            test_pred_labels = test_scores.argmax(dim=1)
             test_acc = (test_pred_labels == y_test_tensor).float().mean().item()
             print(f"\n[MahalanobisNet] Test Accuracy: {test_acc * 100:.2f}%")
             print(classification_report(
@@ -217,7 +217,7 @@ def compare_mahalanobis_classifiers(X_train, y_train, X_val, y_val, X_test, y_te
 
 # ------------------------------ MAIN ------------------------------- #
 if __name__ == "__main__":
-    start_time = datetime.now().timestamp()
+    start_time = datetime.datetime.now().timestamp()
     print("Execution started...")
 
     parser = argparse.ArgumentParser(description="Compare Mahalanobis-based classifiers.")
@@ -238,7 +238,7 @@ if __name__ == "__main__":
     data_m = load_aligned_data(male_audios_dir, textgrids_dir)
     data_f = load_aligned_data(female_audios_dir, textgrids_dir)
     all_data = data_m + data_f 
-    if args.run_minimal_dataset:
+    if args.run_minimal_dataset:        # FIXME should come before loading to avoid processing all files
         all_data = all_data[:100]
 
     frame_data = [frames for frames, _ in all_data]
@@ -274,5 +274,5 @@ if __name__ == "__main__":
 
     compare_mahalanobis_classifiers(X_train, y_train, X_val, y_val, X_test, y_test, label_encoder, args.classifiers)
 
-    end_time = datetime.now().timestamp()
-    print(f"Elapsed time: {datetime.fromtimestamp(end_time - start_time).strftime('%H:%M:%S')}")
+    end_time = datetime.datetime.now().timestamp()
+    print(f"Elapsed time: {datetime.timedelta(end_time - start_time).strftime('%H:%M:%S')}")
