@@ -177,8 +177,16 @@ def compare_mahalanobis_classifiers(X_train, y_train, X_val, y_val, X_test, y_te
             for xb, yb in loader:
                 embeds = model(xb)
                 means, inv_cov = compute_class_stats(embeds, yb, len(label_encoder.classes_))
-                preds = mahalanobis_predict(embeds, means, inv_cov)
-                loss = criterion(preds, yb)
+                
+                # pass logits to CrossEntropyLoss criterion
+                logits = []
+                for mean in means:
+                    diff = embeds - mean.unsqueeze(0)
+                    d = torch.einsum('bi,ij,bj->b', diff, inv_cov, diff)
+                    logits.append(-d) 
+                logits = torch.stack(logits, dim=1)
+                loss = criterion(logits, yb)
+
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
