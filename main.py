@@ -5,6 +5,7 @@ import librosa
 from textgrid import TextGrid
 import torch
 import logging
+import argparse
 
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.model_selection import train_test_split
@@ -127,86 +128,106 @@ def mahalanobis_classification(X, means, inv_covs):
 
 
 # ----------------------- CLASSIFIER COMPARISON ----------------------- #
-def compare_mahalanobis_classifiers(X_train, y_train, X_val, y_val, X_test, y_test, label_encoder):
-    print("\n\nComparing Mahalanobis-based classifiers...\n")
+def compare_mahalanobis_classifiers(X_train, y_train, X_val, y_val, X_test, y_test, label_encoder, classifiers_to_run):
+    print(f"\n\nRunning selected classifiers: {', '.join(classifiers_to_run)}\n")
+
     classes = np.unique(y_train)
     cov = np.cov(X_train.T) + REGULARIZATION * np.eye(X_train.shape[1])
     inv_cov = np.linalg.inv(cov)
     means = {label: np.mean(X_train[y_train == label], axis=0) for label in classes}
 
-    # --- Mahalanobis Centroid ---
-    def centroid_predict(X):
-        preds = [classes[np.argmin([mahalanobis(x, means[c], inv_cov) for c in classes])] for x in X]
-        return np.array(preds)
+    if "centroid" in classifiers_to_run:
+        print("[Running] Centroid Mahalanobis Classifier...")
+        def centroid_predict(X):
+            preds = [classes[np.argmin([mahalanobis(x, means[c], inv_cov) for c in classes])] for x in X]
+            return np.array(preds)
 
-    y_pred = centroid_predict(X_test)
-    print("Centroid Mahalanobis Accuracy:", accuracy_score(y_test, y_pred) * 100)
-    print(classification_report(y_test, y_pred, target_names=label_encoder.classes_, zero_division=0))
+        y_pred = centroid_predict(X_test)
+        print("Centroid Mahalanobis Accuracy:", accuracy_score(y_test, y_pred) * 100)
+        print(classification_report(y_test, y_pred, target_names=label_encoder.classes_, zero_division=0))
 
-    # --- LDA ---
-    try:
-        clf = LinearDiscriminantAnalysis()
-        clf.fit(X_train, y_train)
-        y_pred_lda = clf.predict(X_test)
-        print("LDA Accuracy:", accuracy_score(y_test, y_pred_lda) * 100)
-        print(classification_report(y_test, y_pred_lda, target_names=label_encoder.classes_))
-    except Exception as e:
-        print(f"LDA failed: {e}")
+    if "lda" in classifiers_to_run:
+        print("\n[Running] Linear Discriminant Analysis (LDA)...")
+        try:
+            clf = LinearDiscriminantAnalysis()
+            clf.fit(X_train, y_train)
+            y_pred_lda = clf.predict(X_test)
+            print("LDA Accuracy:", accuracy_score(y_test, y_pred_lda) * 100)
+            print(classification_report(y_test, y_pred_lda, target_names=label_encoder.classes_))
+        except Exception as e:
+            print(f"LDA failed: {e}")
 
-    # --- MahalanobisNet ---
-    print("\nTraining MahalanobisNet...")
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = MahalanobisNet(input_dim=X_train.shape[1], embedding_dim=32).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
-    criterion = nn.CrossEntropyLoss()
+    if "mahalanobisnet" in classifiers_to_run:
+        print("\n[Running] MahalanobisNet Classifier...")
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        model = MahalanobisNet(input_dim=X_train.shape[1], embedding_dim=32).to(device)
+        optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+        criterion = nn.CrossEntropyLoss()
 
-    X_train_tensor = torch.tensor(X_train, dtype=torch.float32).to(device)
-    y_train_tensor = torch.tensor(y_train, dtype=torch.long).to(device)
-    X_val_tensor = torch.tensor(X_val, dtype=torch.float32).to(device)
-    y_val_tensor = torch.tensor(y_val, dtype=torch.long).to(device)
-    X_test_tensor = torch.tensor(X_test, dtype=torch.float32).to(device)
-    y_test_tensor = torch.tensor(y_test, dtype=torch.long).to(device)
+        X_train_tensor = torch.tensor(X_train, dtype=torch.float32).to(device)
+        y_train_tensor = torch.tensor(y_train, dtype=torch.long).to(device)
+        X_val_tensor = torch.tensor(X_val, dtype=torch.float32).to(device)
+        y_val_tensor = torch.tensor(y_val, dtype=torch.long).to(device)
+        X_test_tensor = torch.tensor(X_test, dtype=torch.float32).to(device)
+        y_test_tensor = torch.tensor(y_test, dtype=torch.long).to(device)
 
-    loader = DataLoader(TensorDataset(X_train_tensor, y_train_tensor), batch_size=512, shuffle=True)
-    for epoch in range(10):
-        model.train()
-        for xb, yb in loader:
-            embeds = model(xb)
-            means, inv_cov = compute_class_stats(embeds, yb, len(label_encoder.classes_))
-            preds = mahalanobis_predict(embeds, means, inv_cov)
-            loss = criterion(preds, yb)
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+        loader = DataLoader(TensorDataset(X_train_tensor, y_train_tensor), batch_size=512, shuffle=True)
+        for epoch in range(10):
+            model.train()
+            for xb, yb in loader:
+                embeds = model(xb)
+                means, inv_cov = compute_class_stats(embeds, yb, len(label_encoder.classes_))
+                preds = mahalanobis_predict(embeds, means, inv_cov)
+                loss = criterion(preds, yb)
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
 
-        model.eval()
+            model.eval()
+            with torch.no_grad():
+                val_embeds = model(X_val_tensor)
+                train_embeds = model(X_train_tensor)
+                means, inv_cov = compute_class_stats(train_embeds, y_train_tensor, len(label_encoder.classes_))
+                val_preds = mahalanobis_predict(val_embeds, means, inv_cov)
+                val_pred_labels = val_preds.argmax(dim=1)
+                val_acc = (val_pred_labels == y_val_tensor).float().mean().item()
+                print(f"Epoch {epoch+1}: Val Accuracy = {val_acc * 100:.2f}%")
+
         with torch.no_grad():
-            val_embeds = model(X_val_tensor)
-            train_embeds = model(X_train_tensor)
-            means, inv_cov = compute_class_stats(train_embeds, y_train_tensor, len(label_encoder.classes_))
-            val_preds = mahalanobis_predict(val_embeds, means, inv_cov)
-            val_pred_labels = val_preds.argmax(dim=1)
-            val_acc = (val_pred_labels == y_val_tensor).float().mean().item()
-            print(f"Epoch {epoch+1}: Val Accuracy = {val_acc * 100:.2f}%")
-
-    with torch.no_grad():
-        test_embeds = model(X_test_tensor)
-        test_preds = mahalanobis_predict(test_embeds, means, inv_cov)
-        test_pred_labels = test_preds.argmax(dim=1)
-        test_acc = (test_pred_labels == y_test_tensor).float().mean().item()
-        print(f"\n[MahalanobisNet] Test Accuracy: {test_acc * 100:.2f}%")
-        print(classification_report(
-            y_test_tensor.cpu().numpy(),
-            test_pred_labels.cpu().numpy(),
-            target_names=label_encoder.classes_
-        ))
+            test_embeds = model(X_test_tensor)
+            test_preds = mahalanobis_predict(test_embeds, means, inv_cov)
+            test_pred_labels = test_preds.argmax(dim=1)
+            test_acc = (test_pred_labels == y_test_tensor).float().mean().item()
+            print(f"\n[MahalanobisNet] Test Accuracy: {test_acc * 100:.2f}%")
+            print(classification_report(
+                y_test_tensor.cpu().numpy(),
+                test_pred_labels.cpu().numpy(),
+                target_names=label_encoder.classes_
+            ))
 
 
 # ------------------------------ MAIN ------------------------------- #
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Compare Mahalanobis-based classifiers.")
+    parser.add_argument(
+        "--classifiers",
+        type=str,
+        nargs="+",
+        default=["centroid", "lda", "mahalanobisnet"],
+        help="List of classifiers to include. Options: centroid, lda, mahalanobisnet"
+    )
+    parser.add_argument(
+        "--run-minimal-dataset",
+        action="store_true",
+        help="Run on a minimal dataset."
+    )
+    args = parser.parse_args()
+
     data_m = load_aligned_data(male_audios_dir, textgrids_dir)
     data_f = load_aligned_data(female_audios_dir, textgrids_dir)
     all_data = data_m + data_f 
+    if args.run_minimal_dataset:
+        all_data = all_data[:100]
 
     frame_data = [frames for frames, _ in all_data]
     frame_labels = [labels for _, labels in all_data]
@@ -239,4 +260,5 @@ if __name__ == "__main__":
     X_val = scaler.transform(X_val)
     X_test = scaler.transform(X_test)
 
-    compare_mahalanobis_classifiers(X_train, y_train, X_val, y_val, X_test, y_test, label_encoder)
+    compare_mahalanobis_classifiers(X_train, y_train, X_val, y_val, X_test, y_test, label_encoder, args.classifiers)
+
