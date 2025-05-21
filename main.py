@@ -21,7 +21,7 @@ import configparser
 
 import torch.nn as nn
 from torch.utils.data import TensorDataset, DataLoader
-from mahalanobis_net import MahalanobisNet, compute_class_stats, mahalanobis_predict
+from mahalanobis_net import MahalanobisNet, compute_class_stats, mahalanobis_scores
 
 
 # ----------------------------- CONFIG ----------------------------- #
@@ -196,14 +196,14 @@ def compare_mahalanobis_classifiers(X_train, y_train, X_val, y_val, X_test, y_te
                 val_embeds = model(X_val_tensor)
                 train_embeds = model(X_train_tensor)
                 means, inv_cov = compute_class_stats(train_embeds, y_train_tensor, len(label_encoder.classes_))
-                val_preds = mahalanobis_predict(val_embeds, means, inv_cov)
+                val_preds = mahalanobis_scores(val_embeds, means, inv_cov)
                 val_pred_labels = val_preds.argmax(dim=1)
                 val_acc = (val_pred_labels == y_val_tensor).float().mean().item()
                 print(f"Epoch {epoch+1}: Val Accuracy = {val_acc * 100:.2f}%")
 
         with torch.no_grad():
             test_embeds = model(X_test_tensor)
-            test_preds = mahalanobis_predict(test_embeds, means, inv_cov)
+            test_preds = mahalanobis_scores(test_embeds, means, inv_cov)
             test_pred_labels = test_preds.argmax(dim=1)
             test_acc = (test_pred_labels == y_test_tensor).float().mean().item()
             print(f"\n[MahalanobisNet] Test Accuracy: {test_acc * 100:.2f}%")

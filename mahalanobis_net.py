@@ -31,7 +31,7 @@ def compute_class_stats(embeddings, labels, n_classes, eps=1e-6):
     return means, inv_cov
 
 
-def mahalanobis_predict(embeddings, class_means, inv_cov):
+def mahalanobis_scores(embeddings, class_means, inv_cov):
     dists = []
     for mean in class_means:
         diff = embeddings - mean.unsqueeze(0)
