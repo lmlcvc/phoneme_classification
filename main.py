@@ -22,6 +22,8 @@ import torch.nn as nn
 from torch.utils.data import TensorDataset, DataLoader
 
 from mahalanobis_net import MahalanobisNet, MahalanobisRNN, compute_class_stats, mahalanobis_scores
+from tools import EarlyStopping
+
 
 # ----------------------------- CONFIG ----------------------------- #
 config = configparser.ConfigParser()
@@ -169,7 +171,9 @@ def compare_mahalanobis_classifiers(X_train, y_train, X_val, y_val, X_test, y_te
 
         train_loader = DataLoader(TensorDataset(X_train_tensor, y_train_tensor), batch_size=512, shuffle=True)
 
-        for epoch in range(10):
+        early_stopping = EarlyStopping(patience=5, verbose=False, path='best_mahalanobisnet.pth')
+
+        for epoch in range(50):  # Increased epochs for realistic early stopping
             model.train()
             for xb, yb in train_loader:
                 logits, _ = model(xb)
@@ -190,6 +194,15 @@ def compare_mahalanobis_classifiers(X_train, y_train, X_val, y_val, X_test, y_te
                 val_acc = (val_pred_labels == y_val_tensor).float().mean().item()
 
                 print(f"Epoch {epoch + 1}: Validation Accuracy (MahalanobisNet) = {val_acc * 100:.2f}%")
+
+            # Call early stopping
+            early_stopping(val_acc, model)
+            if early_stopping.early_stop:
+                print("Early stopping triggered!")
+                break
+
+        # Load best model weights
+        model.load_state_dict(torch.load('best_mahalanobisnet.pth'))
 
         # Final test evaluation
         model.eval()
@@ -226,7 +239,9 @@ def compare_mahalanobis_classifiers(X_train, y_train, X_val, y_val, X_test, y_te
         X_test_tensor = torch.tensor(X_test, dtype=torch.float32).to(device)
         y_test_tensor = torch.tensor(y_test, dtype=torch.long).to(device)
 
-        for epoch in range(10):
+        early_stopping = EarlyStopping(patience=5, verbose=False, path='best_rnn.pth')
+
+        for epoch in range(50):  # Increase epochs for early stopping effect
             model.train()
             for xb, yb in train_loader:
                 xb, yb = xb.to(device), yb.to(device)
@@ -248,6 +263,15 @@ def compare_mahalanobis_classifiers(X_train, y_train, X_val, y_val, X_test, y_te
                 val_acc = (val_pred_labels == y_val_tensor).float().mean().item()
                 print(f"Epoch {epoch + 1}: Val Accuracy (Mahalanobis) = {val_acc * 100:.2f}%")
 
+            # Early stopping check
+            early_stopping(val_acc, model)
+            if early_stopping.early_stop:
+                print("Early stopping triggered!")
+                break
+
+        # Load best weights
+        model.load_state_dict(torch.load('best_rnn.pth'))
+
         # Final test evaluation using Mahalanobis distance
         model.eval()
         with torch.no_grad():
@@ -258,7 +282,13 @@ def compare_mahalanobis_classifiers(X_train, y_train, X_val, y_val, X_test, y_te
             test_scores = mahalanobis_scores(test_embeds, means, inv_cov)
             test_pred_labels = test_scores.argmax(dim=1)
             test_acc = (test_pred_labels == y_test_tensor).float().mean().item()
-            print(f"\n[RNN + Mahalanobis] Test Accuracy: {test_acc * 100:.2f}%")
+            print(f"\n[RNN] Test Accuracy: {test_acc * 100:.2f}%")
+            print(classification_report(
+                y_test_tensor.cpu().numpy(),
+                test_pred_labels.cpu().numpy(),
+                target_names=label_encoder.classes_
+            ))
+            
 
 # ------------------------------ MAIN ------------------------------- #
 if __name__ == "__main__":
