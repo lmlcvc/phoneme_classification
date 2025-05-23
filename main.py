@@ -7,23 +7,21 @@ import torch
 import logging
 import argparse
 import datetime
+import configparser
 
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, classification_report
 from sklearn.decomposition import PCA
-
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
-
 from scipy.spatial.distance import mahalanobis
 from joblib import Parallel, delayed
 from tqdm import tqdm
-import configparser
 
 import torch.nn as nn
 from torch.utils.data import TensorDataset, DataLoader
-from mahalanobis_net import MahalanobisNet, compute_class_stats, mahalanobis_scores
 
+from mahalanobis_net import MahalanobisNet, MahalanobisRNN, compute_class_stats, mahalanobis_scores
 
 # ----------------------------- CONFIG ----------------------------- #
 config = configparser.ConfigParser()
@@ -119,55 +117,49 @@ def extract_lpc_features(frames):
     return np.array(lpc_list)
 
 
-# ------------------------- MAHALANOBIS CLF -------------------------- #
-def mahalanobis_classification(X, means, inv_covs):
-    preds = []
-    for x in tqdm(X, desc="Classifying"):
-        dists = [mahalanobis(x, means[label], inv_covs[label]) for label in means]
-        preds.append(np.argmin(dists))
-    return np.array(preds)
+# ----------------------- SEQUENCE GENERATION ----------------------- #
+def make_sequences(features_list, labels_list, seq_len=15):
+    X, y = [], []
+    for features, labels in zip(features_list, labels_list):
+        if len(features) < seq_len:
+            continue
+        for i in range(len(features) - seq_len + 1):
+            label_seq = labels[i:i+seq_len]
+            if any(lbl in DROP_LABELS for lbl in label_seq):
+                continue
+            X.append(features[i:i+seq_len])
+            y.append(label_seq[seq_len // 2])  # label from center frame
+    return np.array(X), np.array(y)
 
 
 # ----------------------- CLASSIFIER COMPARISON ----------------------- #
 def compare_mahalanobis_classifiers(X_train, y_train, X_val, y_val, X_test, y_test, label_encoder, classifiers_to_run):
     print(f"\n\nRunning selected classifiers: {', '.join(classifiers_to_run)}\n")
-
     classes = np.unique(y_train)
-    cov = np.cov(X_train.T) + REGULARIZATION * np.eye(X_train.shape[1])
-    inv_cov = np.linalg.inv(cov)
-    means = {label: np.mean(X_train[y_train == label], axis=0) for label in classes}
 
     if "centroid" in classifiers_to_run:
         print("[Running] Centroid Mahalanobis Classifier...")
-        def centroid_predict(X):
-            preds = [classes[np.argmin([mahalanobis(x, means[c], inv_cov) for c in classes])] for x in X]
-            return np.array(preds)
-
-        y_pred = centroid_predict(X_test)
-        print("Centroid Mahalanobis Accuracy:", accuracy_score(y_test, y_pred) * 100)
-        print(classification_report(y_test, y_pred, target_names=label_encoder.classes_, zero_division=0))
+        cov = np.cov(X_train.T) + REGULARIZATION * np.eye(X_train.shape[1])
+        inv_cov = np.linalg.inv(cov)
+        means = {label: np.mean(X_train[y_train == label], axis=0) for label in classes}
+        preds = [min(means, key=lambda c: mahalanobis(x, means[c], inv_cov)) for x in X_test]
+        print("Centroid Accuracy:", accuracy_score(y_test, preds) * 100)
 
     if "lda" in classifiers_to_run:
         print("\n[Running] Linear Discriminant Analysis (LDA)...")
-        try:
-            clf = LinearDiscriminantAnalysis()
-            clf.fit(X_train, y_train)
-            y_pred_lda = clf.predict(X_test)
-            print("LDA Accuracy:", accuracy_score(y_test, y_pred_lda) * 100)
-            print(classification_report(y_test, y_pred_lda, target_names=label_encoder.classes_))
-        except Exception as e:
-            print(f"LDA failed: {e}")
+        clf = LinearDiscriminantAnalysis()
+        clf.fit(X_train, y_train)
+        y_pred = clf.predict(X_test)
+        print("LDA Accuracy:", accuracy_score(y_test, y_pred) * 100)
 
     if "mahalanobisnet" in classifiers_to_run:
         print("\n[Running] MahalanobisNet Classifier...")
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        
-        # Initialize model once
+
         model = MahalanobisNet(input_dim=X_train.shape[1], embedding_dim=32, n_classes=len(label_encoder.classes_)).to(device)
         optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
         criterion = nn.CrossEntropyLoss()
 
-        # Move data to tensors
         X_train_tensor = torch.tensor(X_train, dtype=torch.float32).to(device)
         y_train_tensor = torch.tensor(y_train, dtype=torch.long).to(device)
         X_val_tensor = torch.tensor(X_val, dtype=torch.float32).to(device)
@@ -175,38 +167,41 @@ def compare_mahalanobis_classifiers(X_train, y_train, X_val, y_val, X_test, y_te
         X_test_tensor = torch.tensor(X_test, dtype=torch.float32).to(device)
         y_test_tensor = torch.tensor(y_test, dtype=torch.long).to(device)
 
-        # Training loop using classification loss
-        loader = DataLoader(TensorDataset(X_train_tensor, y_train_tensor), batch_size=512, shuffle=True)
+        train_loader = DataLoader(TensorDataset(X_train_tensor, y_train_tensor), batch_size=512, shuffle=True)
+
         for epoch in range(10):
             model.train()
-            for xb, yb in loader:
+            for xb, yb in train_loader:
                 logits, _ = model(xb)
                 loss = criterion(logits, yb)
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
 
-            # Evaluate using Mahalanobis
+            # Validation using Mahalanobis distance on embeddings
             model.eval()
             with torch.no_grad():
                 _, train_embeds = model(X_train_tensor)
                 _, val_embeds = model(X_val_tensor)
+
                 means, inv_cov = compute_class_stats(train_embeds, y_train_tensor, len(label_encoder.classes_))
                 val_scores = mahalanobis_scores(val_embeds, means, inv_cov)
                 val_pred_labels = val_scores.argmax(dim=1)
                 val_acc = (val_pred_labels == y_val_tensor).float().mean().item()
-                print(f"Epoch {epoch + 1}: Val Accuracy = {val_acc * 100:.2f}%")
+
+                print(f"Epoch {epoch + 1}: Validation Accuracy (MahalanobisNet) = {val_acc * 100:.2f}%")
 
         # Final test evaluation
         model.eval()
         with torch.no_grad():
             _, train_embeds = model(X_train_tensor)
             _, test_embeds = model(X_test_tensor)
-            means, inv_cov = compute_class_stats(train_embeds, y_train_tensor, len(label_encoder.classes_))
 
+            means, inv_cov = compute_class_stats(train_embeds, y_train_tensor, len(label_encoder.classes_))
             test_scores = mahalanobis_scores(test_embeds, means, inv_cov)
             test_pred_labels = test_scores.argmax(dim=1)
             test_acc = (test_pred_labels == y_test_tensor).float().mean().item()
+
             print(f"\n[MahalanobisNet] Test Accuracy: {test_acc * 100:.2f}%")
             print(classification_report(
                 y_test_tensor.cpu().numpy(),
@@ -214,65 +209,103 @@ def compare_mahalanobis_classifiers(X_train, y_train, X_val, y_val, X_test, y_te
                 target_names=label_encoder.classes_
             ))
 
+    if "rnn" in classifiers_to_run:
+        print("\n[Running] RNN Classifier...")
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        model = MahalanobisRNN(input_dim=X_train.shape[2], hidden_dim=64, n_classes=len(label_encoder.classes_)).to(device)
+        optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+        criterion = nn.CrossEntropyLoss()
+
+        train_ds = TensorDataset(torch.tensor(X_train, dtype=torch.float32), torch.tensor(y_train, dtype=torch.long))
+        train_loader = DataLoader(train_ds, batch_size=64, shuffle=True)
+
+        X_train_tensor = torch.tensor(X_train, dtype=torch.float32).to(device)
+        y_train_tensor = torch.tensor(y_train, dtype=torch.long).to(device)
+        X_val_tensor = torch.tensor(X_val, dtype=torch.float32).to(device)
+        y_val_tensor = torch.tensor(y_val, dtype=torch.long).to(device)
+        X_test_tensor = torch.tensor(X_test, dtype=torch.float32).to(device)
+        y_test_tensor = torch.tensor(y_test, dtype=torch.long).to(device)
+
+        for epoch in range(10):
+            model.train()
+            for xb, yb in train_loader:
+                xb, yb = xb.to(device), yb.to(device)
+                logits, _ = model(xb)
+                loss = criterion(logits, yb)
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+
+            # Evaluate on validation set using Mahalanobis distance on embeddings
+            model.eval()
+            with torch.no_grad():
+                _, train_embeds = model(X_train_tensor)
+                means, inv_cov = compute_class_stats(train_embeds, y_train_tensor, len(label_encoder.classes_))
+
+                _, val_embeds = model(X_val_tensor)
+                val_scores = mahalanobis_scores(val_embeds, means, inv_cov)
+                val_pred_labels = val_scores.argmax(dim=1)
+                val_acc = (val_pred_labels == y_val_tensor).float().mean().item()
+                print(f"Epoch {epoch + 1}: Val Accuracy (Mahalanobis) = {val_acc * 100:.2f}%")
+
+        # Final test evaluation using Mahalanobis distance
+        model.eval()
+        with torch.no_grad():
+            _, train_embeds = model(X_train_tensor)
+            means, inv_cov = compute_class_stats(train_embeds, y_train_tensor, len(label_encoder.classes_))
+
+            _, test_embeds = model(X_test_tensor)
+            test_scores = mahalanobis_scores(test_embeds, means, inv_cov)
+            test_pred_labels = test_scores.argmax(dim=1)
+            test_acc = (test_pred_labels == y_test_tensor).float().mean().item()
+            print(f"\n[RNN + Mahalanobis] Test Accuracy: {test_acc * 100:.2f}%")
 
 # ------------------------------ MAIN ------------------------------- #
 if __name__ == "__main__":
-    start_time = datetime.datetime.now().timestamp()
-    print("Execution started...")
-
-    parser = argparse.ArgumentParser(description="Compare Mahalanobis-based classifiers.")
-    parser.add_argument(
-        "--classifiers",
-        type=str,
-        nargs="+",
-        default=["centroid", "lda", "mahalanobisnet"],
-        help="List of classifiers to include. Options: centroid, lda, mahalanobisnet"
-    )
-    parser.add_argument(
-        "--run-minimal-dataset",
-        action="store_true",
-        help="Run on a minimal dataset."
-    )
+    parser = argparse.ArgumentParser()
+    parser.add_argument("classifiers", nargs="+", choices=["centroid", "lda", "mahalanobisnet", "rnn"], help="Classifier(s) to run")
+    parser.add_argument("--run-minimal-dataset", action="store_true")
     args = parser.parse_args()
 
-    data_m = load_aligned_data(male_audios_dir, textgrids_dir)
-    data_f = load_aligned_data(female_audios_dir, textgrids_dir)
-    all_data = data_m + data_f 
-    if args.run_minimal_dataset:        # FIXME should come before loading to avoid processing all files
-        all_data = all_data[:100]
+    print("Loading data...")
+    data = load_aligned_data(male_audios_dir, textgrids_dir) + load_aligned_data(female_audios_dir, textgrids_dir)
+    if args.run_minimal_dataset:
+        data = data[:100]
 
-    frame_data = [frames for frames, _ in all_data]
-    frame_labels = [labels for _, labels in all_data]
-    lpc_features = [extract_lpc_features(frames) for frames in tqdm(frame_data, desc="LPC Extraction")]
+    features = [extract_lpc_features(f) for f, _ in data]
+    labels = [l for _, l in data]
 
-    filtered_features = []
-    filtered_labels = []
-    for features, labels in zip(lpc_features, frame_labels):
-        if features.shape[0] > 0:
-            filtered_features.append(features)
-            filtered_labels.append(labels)
+    filtered_features, filtered_labels = [], []
+    for f, l in zip(features, labels):
+        if f.shape[0] > 0:
+            filtered_features.append(f)
+            filtered_labels.append(l)
 
     all_features = np.vstack(filtered_features)
-    all_labels = np.array([lbl for seq in filtered_labels for lbl in seq])
+    all_labels = np.array([l for seq in filtered_labels for l in seq])
 
-    mask = np.array([label not in DROP_LABELS for label in all_labels])
+    mask = np.array([l not in DROP_LABELS for l in all_labels])
     all_features = all_features[mask]
     all_labels = all_labels[mask]
 
     label_encoder = LabelEncoder()
     y_encoded = label_encoder.fit_transform(all_labels)
 
-    X_train, X_test, y_train, y_test = train_test_split(all_features, y_encoded, test_size=0.2, random_state=42)
+    if "rnn" in args.classifiers:
+        X_seq, y_seq_raw = make_sequences(filtered_features, filtered_labels)
+        y_seq = label_encoder.transform(y_seq_raw)  
+        X_train, X_test, y_train, y_test = train_test_split(X_seq, y_seq, test_size=0.2, random_state=42)
+    else:
+        X_train, X_test, y_train, y_test = train_test_split(all_features, y_encoded, test_size=0.2, random_state=42)
+
     val_size = int(X_train.shape[0] * VAL_RATIO)
     X_val, y_val = X_train[-val_size:], y_train[-val_size:]
     X_train, y_train = X_train[:-val_size], y_train[:-val_size]
 
-    scaler = StandardScaler()
-    X_train = scaler.fit_transform(X_train)
-    X_val = scaler.transform(X_val)
-    X_test = scaler.transform(X_test)
+    if "rnn" not in args.classifiers:
+        scaler = StandardScaler()
+        X_train = scaler.fit_transform(X_train)
+        X_val = scaler.transform(X_val)
+        X_test = scaler.transform(X_test)
 
     compare_mahalanobis_classifiers(X_train, y_train, X_val, y_val, X_test, y_test, label_encoder, args.classifiers)
-
-    end_time = datetime.datetime.now().timestamp()
-    print(f"Elapsed time: {datetime.timedelta(end_time - start_time).strftime('%H:%M:%S')}")

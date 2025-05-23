@@ -17,6 +17,22 @@ class MahalanobisNet(nn.Module):
         embed = self.encoder(x)
         logits = self.classifier(embed)
         return logits, embed
+    
+    
+class MahalanobisRNN(nn.Module):
+    def __init__(self, input_dim, embedding_dim=32, hidden_dim=64, n_classes=None):
+        super().__init__()
+        self.lstm = nn.LSTM(input_dim, hidden_dim, batch_first=True)
+        self.embedding = nn.Linear(hidden_dim, embedding_dim)
+        self.classifier = nn.Linear(embedding_dim, n_classes)
+
+    def forward(self, x):
+        # x: (batch, seq_len, input_dim)
+        _, (hn, _) = self.lstm(x)  # hn: (1, batch, hidden_dim)
+        hn = hn.squeeze(0)  # -> (batch, hidden_dim)
+        embed = self.embedding(hn)
+        logits = self.classifier(embed)
+        return logits, embed
 
 
 def compute_class_stats(embeddings, labels, n_classes, eps=1e-6):
