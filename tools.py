@@ -38,3 +38,16 @@ class EarlyStopping:
             self.trace_func(f'Validation accuracy increased ({self.val_acc_max:.6f} --> {val_acc:.6f}).  Saving model ...')
         torch.save(model.state_dict(), self.path)
         self.val_acc_max = val_acc
+
+def extract_embeddings_in_batches(model, dataloader, device):
+    model.eval()
+    all_embeddings = []
+    all_labels = []
+    with torch.no_grad():
+        for xb, yb in dataloader:
+            xb = xb.to(device)
+            _, emb = model(xb)
+            all_embeddings.append(emb.cpu())
+            all_labels.append(yb.cpu())
+    return torch.cat(all_embeddings, dim=0), torch.cat(all_labels, dim=0)
+
