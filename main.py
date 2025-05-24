@@ -258,10 +258,8 @@ def compare_mahalanobis_classifiers(X_train, y_train, X_val, y_val, X_test, y_te
             # Evaluate on validation set using Mahalanobis distance on embeddings
             model.eval()
             with torch.no_grad():
-                _, train_embeds = model(X_train_tensor)
                 means, inv_cov = compute_class_stats(train_embeds, y_train_tensor, len(label_encoder.classes_))
 
-                _, val_embeds = model(X_val_tensor)
                 val_scores = mahalanobis_scores(val_embeds, means, inv_cov)
                 val_pred_labels = val_scores.argmax(dim=1)
                 val_acc = (val_pred_labels == y_val_tensor).float().mean().item()
