@@ -245,6 +245,7 @@ def compare_mahalanobis_classifiers(X_train, y_train, X_val, y_val, X_test, y_te
 
         early_stopping = tools.EarlyStopping(patience=5, verbose=False, path='best_rnn.pth')
 
+        # TODO put in model class
         for epoch in range(50):  # Increase epochs for early stopping effect
             model.train()
             for xb, yb in train_loader:
@@ -253,11 +254,14 @@ def compare_mahalanobis_classifiers(X_train, y_train, X_val, y_val, X_test, y_te
                 loss = criterion(logits, yb)
                 optimizer.zero_grad()
                 loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
                 optimizer.step()
 
             # Evaluate on validation set using Mahalanobis distance on embeddings
             model.eval()
             with torch.no_grad():
+                train_embeds, _ = tools.extract_embeddings_in_batches(model, train_loader, device)
+                val_embeds, _ = tools.extract_embeddings_in_batches(model, val_loader, device)
                 means, inv_cov = compute_class_stats(train_embeds, y_train_tensor, len(label_encoder.classes_))
 
                 val_scores = mahalanobis_scores(val_embeds, means, inv_cov)

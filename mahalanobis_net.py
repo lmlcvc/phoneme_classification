@@ -26,21 +26,27 @@ class MahalanobisNet(nn.Module):
 class MahalanobisRNN(nn.Module):
     def __init__(self, input_dim, embedding_dim=32, hidden_dim=64, n_classes=None):
         super().__init__()
-        self.lstm = nn.LSTM(input_dim, hidden_dim, batch_first=True)
+        self.lstm = nn.LSTM(input_dim, hidden_dim, num_layers=2, batch_first=True, bidirectional=True)
+        self.embedding = nn.Sequential(
+            nn.Linear(hidden_dim*2, embedding_dim),
+            nn.ReLU(),
+            nn.Dropout(0.3)
+        )
+        self.norm = nn.LayerNorm(hidden_dim*2)
         self.dropout = nn.Dropout(0.3)
-        self.bn = nn.BatchNorm1d(hidden_dim)
-        self.embedding = nn.Linear(hidden_dim, embedding_dim)
         self.classifier = nn.Linear(embedding_dim, n_classes)
 
     def forward(self, x):
-        _, (hn, _) = self.lstm(x)  # hn: (1, batch, hidden_dim)
-        hn = hn.squeeze(0)         # -> (batch, hidden_dim)
-        hn = self.bn(hn)
-        hn = self.dropout(hn)
-        embed = self.embedding(hn)
+        _, (hn, _) = self.lstm(x)  # hn: (num_layers * num_directions, batch, hidden_dim)
+        hn = hn.view(2, 2, x.size(0), self.lstm.hidden_size)  # (layers, directions, batch, hidden)
+        hn_fwd = hn[-1, 0]  # last layer forward
+        hn_bwd = hn[-1, 1]  # last layer backward
+        hn_cat = torch.cat((hn_fwd, hn_bwd), dim=1)  # (batch, hidden_dim*2)
+        hn_cat = self.norm(hn_cat)
+        hn_cat = self.dropout(hn_cat)
+        embed = self.embedding(hn_cat)
         logits = self.classifier(embed)
         return logits, embed
-
 
 
 def compute_class_stats(embeddings, labels, n_classes, eps=1e-6):
