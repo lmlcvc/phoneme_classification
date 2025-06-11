@@ -232,7 +232,6 @@ def compare_mahalanobis_classifiers(X_train, y_train, X_val, y_val, X_test, y_te
         optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
         criterion = nn.CrossEntropyLoss()
 
-        model.visualise()
         summary(model, input_size=(32, 100, 13))
 
         X_train_tensor = torch.tensor(X_train, dtype=torch.float32).to(device)
