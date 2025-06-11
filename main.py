@@ -20,6 +20,7 @@ from tqdm import tqdm
 
 import torch.nn as nn
 from torch.utils.data import TensorDataset, DataLoader
+from torchinfo import summary
 
 from mahalanobis_net import MahalanobisNet, MahalanobisRNN, compute_class_stats, mahalanobis_scores
 import tools
@@ -231,6 +232,9 @@ def compare_mahalanobis_classifiers(X_train, y_train, X_val, y_val, X_test, y_te
         optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
         criterion = nn.CrossEntropyLoss()
 
+        model.visualise()
+        summary(model, input_size=(32, 100, 13))
+
         X_train_tensor = torch.tensor(X_train, dtype=torch.float32).to(device)
         y_train_tensor = torch.tensor(y_train, dtype=torch.long).to(device)
         X_val_tensor = torch.tensor(X_val, dtype=torch.float32).to(device)
@@ -248,6 +252,10 @@ def compare_mahalanobis_classifiers(X_train, y_train, X_val, y_val, X_test, y_te
         # TODO put in model class
         for epoch in range(50):  # Increase epochs for early stopping effect
             model.train()
+            train_correct = 0
+            train_total = 0
+            train_loss_epoch = 0
+
             for xb, yb in train_loader:
                 xb, yb = xb.to(device), yb.to(device)
                 logits, _ = model(xb)
@@ -257,6 +265,15 @@ def compare_mahalanobis_classifiers(X_train, y_train, X_val, y_val, X_test, y_te
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
                 optimizer.step()
 
+                # Metrics
+                train_loss_epoch += loss.item() * xb.size(0)
+                preds = logits.argmax(dim=1)
+                train_correct += (preds == yb).sum().item()
+                train_total += yb.size(0)
+
+            train_acc_epoch = train_correct / train_total
+            train_loss_epoch /= train_total
+
             # Evaluate on validation set using Mahalanobis distance on embeddings
             model.eval()
             with torch.no_grad():
@@ -264,10 +281,30 @@ def compare_mahalanobis_classifiers(X_train, y_train, X_val, y_val, X_test, y_te
                 val_embeds, _ = tools.extract_embeddings_in_batches(model, val_loader, device)
                 means, inv_cov = compute_class_stats(train_embeds, y_train_tensor, len(label_encoder.classes_))
 
+                # Validation predictions and loss
                 val_scores = mahalanobis_scores(val_embeds, means, inv_cov)
                 val_pred_labels = val_scores.argmax(dim=1)
                 val_acc = (val_pred_labels == y_val_tensor).float().mean().item()
-                print(f"Epoch {epoch + 1}: Val Accuracy (Mahalanobis) = {val_acc * 100:.2f}%")
+
+                # Calculate validation loss using the model's classifier logits
+                val_loss_epoch = 0
+                val_total = 0
+                for xb, yb in val_loader:
+                    xb, yb = xb.to(device), yb.to(device)
+                    logits, _ = model(xb)
+                    val_loss = criterion(logits, yb)
+                    val_loss_epoch += val_loss.item() * xb.size(0)
+                    val_total += yb.size(0)
+                val_loss_epoch /= val_total
+
+                print(f"Epoch {epoch + 1}: Train Acc = {train_acc_epoch*100:.2f}%, Train Loss = {train_loss_epoch:.4f}, "
+                f"Val Acc = {val_acc*100:.2f}%, Val Loss = {val_loss_epoch:.4f}")
+
+            # --- Track in model.history ---
+            model.history['train_acc'].append(train_acc_epoch)
+            model.history['train_loss'].append(train_loss_epoch)
+            model.history['val_acc'].append(val_acc)
+            model.history['val_loss'].append(val_loss_epoch)
 
             # Early stopping check
             early_stopping(val_acc, model)
@@ -295,6 +332,8 @@ def compare_mahalanobis_classifiers(X_train, y_train, X_val, y_val, X_test, y_te
                 test_pred_labels.cpu().numpy(),
                 target_names=label_encoder.classes_
             ))
+
+        model.plot_training(model.history)
             
 
 # ------------------------------ MAIN ------------------------------- #
@@ -343,6 +382,6 @@ if __name__ == "__main__":
         scaler = StandardScaler()
         X_train = scaler.fit_transform(X_train)
         X_val = scaler.transform(X_val)
-        X_test = scaler.transform(X_test)
+        X_test = scaler.transform(X_test)    
 
     compare_mahalanobis_classifiers(X_train, y_train, X_val, y_val, X_test, y_test, label_encoder, args.classifiers)

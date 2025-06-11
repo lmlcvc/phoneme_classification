@@ -1,7 +1,8 @@
+from matplotlib import pyplot as plt
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
+from torchviz import make_dot
 
 class MahalanobisNet(nn.Module):
     def __init__(self, input_dim, embedding_dim=32, n_classes=None):
@@ -36,6 +37,13 @@ class MahalanobisRNN(nn.Module):
         self.dropout = nn.Dropout(0.3)
         self.classifier = nn.Linear(embedding_dim, n_classes)
 
+        self.history = {
+            'train_acc': [],
+            'val_acc': [],
+            'train_loss': [], 
+            'val_loss': []  
+        }
+
     def forward(self, x):
         _, (hn, _) = self.lstm(x)  # hn: (num_layers * num_directions, batch, hidden_dim)
         hn = hn.view(2, 2, x.size(0), self.lstm.hidden_size)  # (layers, directions, batch, hidden)
@@ -47,7 +55,37 @@ class MahalanobisRNN(nn.Module):
         embed = self.embedding(hn_cat)
         logits = self.classifier(embed)
         return logits, embed
+    
+    def visualise(self, filename="model_architecture"):
+        x = torch.randn(1, 100, 13, requires_grad=True)  # input shape: batch x time x features
+        logits, embed = self(x)
+        dot = make_dot((logits, embed), params=dict(self.named_parameters()))
+        dot.render(filename, format="png")
+        return dot
+    
+    def plot_training(self, history):
+        epochs = range(1, len(history['train_loss']) + 1)
 
+        plt.figure(figsize=(12, 5))
+
+        plt.subplot(1, 2, 1)
+        plt.plot(epochs, history['train_loss'], label='train loss')
+        plt.plot(epochs, history['val_loss'], label='val loss')
+        plt.xlabel('Epoch')
+        plt.ylabel('Loss')
+        plt.title('Loss over epochs')
+        plt.legend()
+
+        plt.subplot(1, 2, 2)
+        plt.plot(epochs, history['train_acc'], label='train acc')
+        plt.plot(epochs, history['val_acc'], label='val acc')
+        plt.xlabel('Epoch')
+        plt.ylabel('Accuracy (%)')
+        plt.title('Accuracy over epochs')
+        plt.legend()
+
+        plt.tight_layout()
+        plt.savefig("training_progress.png")
 
 def compute_class_stats(embeddings, labels, n_classes, eps=1e-6):
     means = []
