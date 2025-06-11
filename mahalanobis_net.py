@@ -2,7 +2,6 @@ from matplotlib import pyplot as plt
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torchviz import make_dot
 
 class MahalanobisNet(nn.Module):
     def __init__(self, input_dim, embedding_dim=32, n_classes=None):
@@ -55,13 +54,6 @@ class MahalanobisRNN(nn.Module):
         embed = self.embedding(hn_cat)
         logits = self.classifier(embed)
         return logits, embed
-    
-    def visualise(self, filename="model_architecture"):
-        x = torch.randn(1, 100, 13, requires_grad=True)  # input shape: batch x time x features
-        logits, embed = self(x)
-        dot = make_dot((logits, embed), params=dict(self.named_parameters()))
-        dot.render(filename, format="png")
-        return dot
     
     def plot_training(self, history):
         epochs = range(1, len(history['train_loss']) + 1)
